@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sindbad Gate 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1c232d; color: #e8edf2; font: 14px/1.4 system-ui, "Segoe UI", sans-serif; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  #panel { position: fixed; top: 12px; left: 12px; background: rgba(20, 26, 34, .88); border: 1px solid #36414f; border-radius: 8px; padding: 10px 12px; max-width: 250px; }
+  #panel h1 { font-size: 15px; margin: 0 0 8px; }
+  #panel .row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  button { background: #2b3644; color: #e8edf2; border: 1px solid #47566a; border-radius: 6px; padding: 5px 9px; font: inherit; cursor: pointer; }
+  button:hover { background: #38475a; }
+  label { display: flex; align-items: center; gap: 6px; margin: 2px 0; cursor: pointer; }
+  .sw { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+  #hint { position: fixed; bottom: 10px; left: 12px; right: 12px; color: #9fb0c2; font-size: 12.5px; }
+  #err { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <h1>The Sindbad Gate - steel structure</h1>
+  <div class="row">
+    <button data-v="iso">3D</button><button data-v="front">Front</button><button data-v="back">Back</button>
+    <button data-v="side">Side</button><button data-v="top">Top</button>
+  </div>
+  <label><input type="checkbox" data-g="frame" checked><span class="sw" style="background:#4fb6c9"></span>I-beam 150 (frame, arch chords, supports)</label>
+  <label><input type="checkbox" data-g="brace" checked><span class="sw" style="background:#e2c84a"></span>U-section 100 (bracing, arch web)</label>
+  <label><input type="checkbox" data-g="plates" checked><span class="sw" style="background:#c85fc8"></span>Plates</label>
+  <label><input type="checkbox" data-g="ropes" checked><span class="sw" style="background:#e0483e"></span>Ropes, pulleys, anchors</label>
+  <label><input type="checkbox" data-g="conc" checked><span class="sw" style="background:#9a9a9a"></span>Concrete foundations 3.1 x 2.6 x 3 m, ground</label>
+</div>
+<div id="hint">Drag to rotate &middot; scroll or pinch to zoom &middot; right-drag (or Shift + drag) to move</div>
+<div id="err">The 3D engine could not be loaded. This page needs an internet connection the first time it opens.</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+if (!window.THREE) { document.getElementById('err').style.display = 'flex'; }
+else (function () {
+  // ---- dimensions in metres (same as the CAD drawing) ----
+  var Y0 = 0.25, H1 = 3.25, H2 = 6.5, H3 = 9.75, PYR = 0.9;
+  var XE = 6.575, ENDTOP = Y0 + H2 - 0.175, RISE = 1.3, DEPTH = 1.2, MID = ENDTOP + RISE;
+  var R = (XE * XE + RISE * RISE) / (2 * RISE), CY = MID - R;
+  var ZL = 0.925, ZT = 0.825, PUL = Y0 + H2, N = 14, DX = 2 * XE / N;
+  function YT(x) { return CY + Math.sqrt(R * R - x * x); }
+  function V(x, y, z) { return new THREE.Vector3(x, y, z); }
+
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1c232d);
+  var G = { frame: new THREE.Group(), brace: new THREE.Group(), plates: new THREE.Group(), ropes: new THREE.Group(), conc: new THREE.Group() };
+  for (var k in G) scene.add(G[k]);
+  function mat(c) { return new THREE.MeshStandardMaterial({ color: c, roughness: 0.65, metalness: 0.25, side: THREE.DoubleSide }); }
+  var M = { frame: mat(0x4fb6c9), brace: mat(0xe2c84a), plates: mat(0xc85fc8), ropes: mat(0xe0483e), conc: mat(0x9a9a9a) };
+  var UP = V(0, 1, 0);
+
+  function beam(a, b, w, g) {
+    var d = b.clone().sub(a), len = d.length();
+    var m = new THREE.Mesh(new THREE.BoxGeometry(w, len, w), M[g]);
+    m.position.copy(a).addScaledVector(d, 0.5);
+    m.quaternion.setFromUnitVectors(UP, d.normalize());
+    G[g].add(m); return m;
+  }
+  function plate(p, axis, s) {
+    var m = new THREE.Mesh(axis === 'z' ? new THREE.BoxGeometry(s, s, 0.03) : new THREE.BoxGeometry(0.03, s, s), M.plates);
+    m.position.copy(p); G.plates.add(m);
+  }
+  // X brace between bottom corners ab, bb and top corners at, bt, with a plate at the crossing
+  function xbrace(ab, bb, at, bt, axis) {
+    beam(ab, bt, 0.1, 'brace'); beam(bb, at, 0.1, 'brace');
+    var wb = ab.distanceTo(bb), wt = at.distanceTo(bt), s = wb / (wb + wt);
+    plate(ab.clone().lerp(bt, s), axis, 0.25);
+  }
+
+  function pillar(m) {
+    function C(i, h) { // 0 inner-front, 1 outer-front, 2 outer-back, 3 inner-back
+      var xo = m * (8.925 - 0.5 * h / H3), xi = m * XE;
+      return V(i === 1 || i === 2 ? xo : xi, Y0 + h, i < 2 ? ZL : -ZL);
+    }
+    var levels = [0, H1, H2, H3], apex = V(m * 7.5, Y0 + H3 + PYR, 0), i, j, l;
+    for (i = 0; i < 4; i++) {
+      j = (i + 1) % 4;
+      var axis = (i === 0 || i === 2) ? 'z' : 'x';
+      beam(C(i, 0), C(i, H3), 0.15, 'frame');
+      beam(C(i, H3), apex, 0.15, 'frame');
+      for (l = 0; l < 4; l++) {
+        beam(C(i, levels[l]), C(j, levels[l]), 0.15, 'frame');
+        plate(C(i, levels[l]), 'z', 0.22); plate(C(i, levels[l]), 'x', 0.22);
+      }
+      xbrace(C(i, H1), C(j, H1), C(i, H2), C(j, H2), axis);
+      xbrace(C(i, H2), C(j, H2), C(i, H3), C(j, H3), axis);
+      if (i !== 2) { xbrace(C(i, 0), C(j, 0), C(i, H1), C(j, H1), axis); continue; }
+      // back face, section C: door bay. Door is on the left seen from behind:
+      // right pillar (m = 1) against the outer leg, left pillar against the inner leg.
+      var a = m === 1 ? 2 : 3, b = m === 1 ? 3 : 2;
+      var sx = Math.sign(C(b, 0).x - C(a, 0).x);
+      var ux = (a === 3 ? C(a, 0).x : C(a, 2).x) + sx * 0.925;
+      var pb = V(ux, Y0, -ZL), pt = V(ux, Y0 + 2, -ZL);
+      beam(pb, pt, 0.1, 'brace');
+      beam(C(2, 2), C(3, 2), 0.1, 'brace');
+      xbrace(pb, C(b, 0), pt, C(b, 2), 'z');
+      xbrace(C(2, 2), C(3, 2), C(2, H1), C(3, H1), 'z');
+    }
+    plate(apex, 'z', 0.22); plate(apex, 'x', 0.22);
+    var base = new THREE.Mesh(new THREE.BoxGeometry(3.1, 3.0, 2.6), M.conc);
+    base.position.set(m * 7.75, Y0 - 1.5, 0); G.conc.add(base);
+    // hollow square base plate: 300 wide, 25 thick, centred on the leg lines (2350 x 1850 centres)
+    [[0, 0.925, 2.65, 0.3], [0, -0.925, 2.65, 0.3], [1.175, 0, 0.3, 1.55], [-1.175, 0, 0.3, 1.55]].forEach(function (p) {
+      var bp = new THREE.Mesh(new THREE.BoxGeometry(p[2], 0.025, p[3]), M.plates); bp.position.set(m * 7.75 + p[0], Y0 + 0.0125, p[1]); G.plates.add(bp);
+    });
+    // 12 anchor bolts along the setting frame: 4 front, 4 back, 2 on each side
+    var fb = []; [-1.175, -0.4, 0.4, 1.175].forEach(function (x) { fb.push([x, 0.925], [x, -0.925]); }); [-0.45, 0.45].forEach(function (z) { fb.push([1.175, z], [-1.175, z]); });
+    fb.forEach(function (p) { var bo = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.45, 8), M.plates); bo.position.set(m * 7.75 + p[0], Y0 + 0.225, p[1]); G.plates.add(bo); });
+  }
+
+  function truss(z) {
+    var S = 28, k, j, x, xa, xb;
+    for (k = 0; k < S; k++) {
+      xa = -XE + k * 2 * XE / S; xb = xa + 2 * XE / S;
+      beam(V(xa, YT(xa), z), V(xb, YT(xb), z), 0.15, 'frame');
+      beam(V(xa, YT(xa) - DEPTH, z), V(xb, YT(xb) - DEPTH, z), 0.15, 'frame');
+    }
+    for (j = 0; j < N; j++) { // zig-zag triangles
+      xa = -XE + j * DX; xb = xa + DX;
+      if (j % 2 === 0) beam(V(xa, YT(xa) - DEPTH, z), V(xb, YT(xb), z), 0.1, 'brace');
+      else beam(V(xa, YT(xa), z), V(xb, YT(xb) - DEPTH, z), 0.1, 'brace');
+    }
+    for (j = 1; j < N; j++) { // straight beams square to the chords, and node plates
+      x = -XE + j * DX;
+      var ux = x / R, uy = (YT(x) - CY) / R, q = Math.sqrt(DEPTH * DEPTH * uy * uy - DEPTH * DEPTH + R * R), s;
+      if (j % 2 === 0) { s = DEPTH * uy + q; beam(V(x, YT(x) - DEPTH, z), V(s * ux, CY + s * uy - DEPTH, z), 0.1, 'brace'); plate(V(x, YT(x) - DEPTH, z), 'z', 0.18); }
+      else { s = -DEPTH * uy + q; beam(V(x, YT(x), z), V(s * ux, CY + s * uy, z), 0.1, 'brace'); plate(V(x, YT(x), z), 'z', 0.18); }
+    }
+  }
+
+  pillar(-1); pillar(1); truss(ZT); truss(-ZT);
+  // cross members tying the two trusses together, top and bottom, at every web joint
+  for (var j = 0; j <= N; j++) {
+    var x = Math.max(-XE, Math.min(XE, -XE + j * DX));
+    beam(V(x, YT(x), -ZT), V(x, YT(x), ZT), 0.1, 'brace');
+    beam(V(x, YT(x) - DEPTH, -ZT), V(x, YT(x) - DEPTH, ZT), 0.1, 'brace');
+  }
+  [-1, 1].forEach(function (m) {
+    // support: one piece per side, 0.5 deep x 0.4 high x 2.0 wide, top fitted to the arch underside
+    var u1 = YT(6.5) - DEPTH - 0.075, u2 = YT(6.0) - DEPTH - 0.075, b = u1 - 0.4;
+    var sh = new THREE.Shape();
+    sh.moveTo(m * 6.5, b); sh.lineTo(m * 6.0, b); sh.lineTo(m * 6.0, u2); sh.lineTo(m * 6.5, u1); sh.closePath();
+    var sup = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: 2.0, bevelEnabled: false }), M.frame);
+    sup.position.z = -1.0; G.frame.add(sup);
+    // ropes on the centreline: arch -> pulley -> anchor at the base
+    // two of each rope per side: one on the front truss, one on the back truss
+    [-ZT, ZT].forEach(function (z) {
+      // rope A: arch -> anchor bolt on a steel plate at the top outer edge of the tower
+      var a1 = V(m * 1.25, YT(1.25) - DEPTH, z), a2 = V(m * 8.425, Y0 + H3, z);
+      beam(a1, a2, 0.03, 'ropes'); plate(a2, 'z', 0.35);
+      var bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.12, 12), M.ropes);
+      bolt.rotation.x = Math.PI / 2; bolt.position.copy(a2); G.ropes.add(bolt);
+      // rope B: arch -> pulley at the top of segment B -> anchor at the base
+      var at = V(m * 5.5, YT(5.5) - DEPTH, z), pu = V(m * 6.6, PUL, z), an = V(m * 6.6, Y0, z);
+      beam(at, pu, 0.03, 'ropes'); beam(pu, an, 0.03, 'ropes');
+      var p = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.06, 24), M.ropes);
+      p.rotation.x = Math.PI / 2; p.position.copy(pu); G.ropes.add(p);
+      var a = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.16), M.ropes);
+      a.position.set(an.x, an.y + 0.05, z); G.ropes.add(a);
+    });
+  });
+  var ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 24), new THREE.MeshStandardMaterial({ color: 0x2a323d, roughness: 1, transparent: true, opacity: 0.75 }));
+  ground.rotation.x = -Math.PI / 2; G.conc.add(ground);
+  var grid = new THREE.GridHelper(40, 40, 0x4a586a, 0x353f4c); grid.position.y = 0.002; G.conc.add(grid);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x3a4250, 0.85));
+  var sun = new THREE.DirectionalLight(0xffffff, 0.7); sun.position.set(8, 16, 12); scene.add(sun);
+
+  // ---- camera and simple orbit controls ----
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  document.body.insertBefore(renderer.domElement, document.body.firstChild);
+  var cam = new THREE.PerspectiveCamera(40, 1, 0.1, 500);
+  var tgt = V(0, 5, 0), th = 0.6, ph = 1.25, rad = 34, dirty = true;
+  var VIEWS = { iso: [0.6, 1.25], front: [0, 1.5], back: [Math.PI, 1.5], side: [Math.PI / 2, 1.5], top: [0, 0.02] };
+  function place() {
+    cam.position.set(tgt.x + rad * Math.sin(ph) * Math.sin(th), tgt.y + rad * Math.cos(ph), tgt.z + rad * Math.sin(ph) * Math.cos(th));
+    cam.lookAt(tgt); dirty = true;
+  }
+  function resize() {
+    var w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); dirty = true;
+  }
+  window.addEventListener('resize', resize); resize(); place();
+  var el = renderer.domElement, pts = {}, pinch = 0;
+  el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  el.addEventListener('pointerdown', function (e) { el.setPointerCapture(e.pointerId); pts[e.pointerId] = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey }; pinch = 0; });
+  function drop(e) { delete pts[e.pointerId]; pinch = 0; }
+  el.addEventListener('pointerup', drop); el.addEventListener('pointercancel', drop);
+  el.addEventListener('pointermove', function (e) {
+    var p = pts[e.pointerId]; if (!p) return;
+    var dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+    var ids = Object.keys(pts);
+    if (ids.length === 2) {
+      var a = pts[ids[0]], b = pts[ids[1]], d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinch) rad = Math.max(3, Math.min(120, rad * pinch / d));
+      pinch = d;
+    } else if (p.pan) {
+      var k = rad * 0.0012, right = V(Math.cos(th), 0, -Math.sin(th));
+      tgt.addScaledVector(right, -dx * k); tgt.y += dy * k;
+    } else {
+      th -= dx * 0.006; ph = Math.max(0.02, Math.min(Math.PI / 2 - 0.01, ph - dy * 0.006));
+    }
+    place();
+  });
+  el.addEventListener('wheel', function (e) { e.preventDefault(); rad = Math.max(3, Math.min(120, rad * (e.deltaY > 0 ? 1.1 : 0.9))); place(); }, { passive: false });
+  document.querySelectorAll('button[data-v]').forEach(function (b) {
+    b.addEventListener('click', function () { var v = VIEWS[b.dataset.v]; th = v[0]; ph = v[1]; tgt.set(0, 5, 0); rad = 34; place(); });
+  });
+  document.querySelectorAll('input[data-g]').forEach(function (c) {
+    c.addEventListener('change', function () { G[c.dataset.g].visible = c.checked; dirty = true; });
+  });
+  (function loop() { if (dirty) { renderer.render(scene, cam); dirty = false; } requestAnimationFrame(loop); })();
+})();
+</script>
+</body>
+</html>
